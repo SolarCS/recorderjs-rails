@@ -1,88 +1,129 @@
 (function(window){
-
   var WORKER_PATH = 'recorderWorker.js';
-
-  var Recorder = function(source, cfg){
-    var config = cfg || {};
-    var bufferLen = config.bufferLen || 4096;
-    this.context = source.context;
-    this.node = (this.context.createScriptProcessor ||
-                 this.context.createJavaScriptNode).call(this.context,
-                                                         bufferLen, 2, 2);
-    var worker = new Worker(config.workerPath || WORKER_PATH);
-    worker.postMessage({
-      command: 'init',
-      config: {
-        sampleRate: this.context.sampleRate
+  var _createClass = function () {
+    function defineProperties(target, props) {
+      for (var i = 0; i < props.length; i++) {
+        var descriptor = props[i];
+        descriptor.enumerable = descriptor.enumerable || false;
+        descriptor.configurable = true;
+        descriptor.writable = ("value" in descriptor);
+        Object.defineProperty(target, descriptor.key, descriptor);
       }
-    });
-    var recording = false,
-      currCallback;
-
-    this.node.onaudioprocess = function(e){
-      if (!recording) return;
-      worker.postMessage({
-        command: 'record',
-        buffer: [
-          e.inputBuffer.getChannelData(0),
-          e.inputBuffer.getChannelData(1)
-        ]
-      });
     }
+    return function (Constructor, protoProps, staticProps) {
+      if (protoProps) defineProperties(Constructor.prototype, protoProps);
+      if (staticProps) defineProperties(Constructor, staticProps);
+      return Constructor;
+    };
+  }();
 
-    this.configure = function(cfg){
-      for (var prop in cfg){
-        if (cfg.hasOwnProperty(prop)){
-          config[prop] = cfg[prop];
+  var Recorder = function () {
+    function Recorder(source, cfg) {
+      var self = this;
+      this.config = {
+        bufferLen: 4096,
+        numChannels: 2,
+        mimeType: 'audio/wav',
+        workerPath: WORKER_PATH
+      };
+      this.recording = false;
+      this.callbacks = {
+        getBuffer: [],
+        exportWAV: []
+      };
+
+      Object.assign(this.config, cfg);
+      this.context = source.context;
+      this.node = (this.context.createScriptProcessor || this.context.createJavaScriptNode).call(this.context, this.config.bufferLen, this.config.numChannels, this.config.numChannels);
+
+      this.node.onaudioprocess = function (e) {
+        if (!self.recording) return;
+
+        var buffer = [];
+        for (var channel = 0; channel < self.config.numChannels; channel++) {
+          buffer.push(e.inputBuffer.getChannelData(channel));
         }
-      }
-    }
+        self.worker.postMessage({
+          command: 'record',
+          buffer: buffer
+        });
+      };
 
-    this.record = function(){
-      recording = true;
-    }
+      source.connect(this.node);
+      this.node.connect(this.context.destination); //this should not be necessary
 
-    this.stop = function(){
-      recording = false;
-    }
+      this.worker = new Worker(this.config.workerPath);
 
-    this.clear = function(){
-      worker.postMessage({ command: 'clear' });
-    }
-
-    this.getBuffer = function(cb) {
-      currCallback = cb || config.callback;
-      worker.postMessage({ command: 'getBuffer' })
-    }
-
-    this.exportWAV = function(cb, type){
-      currCallback = cb || config.callback;
-      type = type || config.type || 'audio/wav';
-      if (!currCallback) throw new Error('Callback not set');
-      worker.postMessage({
-        command: 'exportWAV',
-        type: type
+      this.worker.postMessage({
+        command: 'init',
+        config: {
+          sampleRate: this.context.sampleRate,
+          numChannels: this.config.numChannels
+        }
       });
+
+      this.worker.onmessage = function (e) {
+        var cb = self.callbacks[e.data.command].pop();
+        if (typeof cb == 'function') {
+          cb(e.data.data);
+        }
+      };
     }
 
-    worker.onmessage = function(e){
-      var blob = e.data;
-      currCallback(blob);
-    }
+    _createClass(Recorder, [{
+      key: 'record',
+      value: function record() {
+        this.recording = true;
+      }
+    }, {
+      key: 'stop',
+      value: function stop() {
+        this.recording = false;
+      }
+    }, {
+      key: 'clear',
+      value: function clear() {
+        this.worker.postMessage({ command: 'clear' });
+      }
+    }, {
+      key: 'getBuffer',
+      value: function getBuffer(cb) {
+        cb = cb || this.config.callback;
+        if (!cb) throw new Error('Callback not set');
 
-    source.connect(this.node);
-    this.node.connect(this.context.destination);    //this should not be necessary
-  };
+        this.callbacks.getBuffer.push(cb);
 
-  Recorder.forceDownload = function(blob, filename){
-    var url = (window.URL || window.webkitURL).createObjectURL(blob);
-    var link = window.document.createElement('a');
-    link.href = url;
-    link.download = filename || 'output.wav';
-    var click = document.createEvent("Event");
-    click.initEvent("click", true, true);
-    link.dispatchEvent(click);
-  }
+        this.worker.postMessage({ command: 'getBuffer' });
+      }
+    }, {
+      key: 'exportWAV',
+      value: function exportWAV(cb, mimeType) {
+        mimeType = mimeType || this.config.mimeType;
+        cb = cb || this.config.callback;
+        if (!cb) throw new Error('Callback not set');
+
+        this.callbacks.exportWAV.push(cb);
+
+        this.worker.postMessage({
+          command: 'exportWAV',
+          type: mimeType
+        });
+      }
+    }], [{
+      key: 'forceDownload',
+      value: function forceDownload(blob, filename) {
+        var url = (window.URL || window.webkitURL).createObjectURL(blob);
+        var link = window.document.createElement('a');
+        link.href = url;
+        link.download = filename || 'output.wav';
+        var click = document.createEvent("Event");
+        click.initEvent("click", true, true);
+        link.dispatchEvent(click);
+      }
+    }]);
+
+    return Recorder;
+  }();
 
   window.Recorder = Recorder;
 
